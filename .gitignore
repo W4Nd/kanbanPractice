@@ -1,4 +1,1 @@
 __pycache__/
-app/models/Dockerfile
-app/routes/Dockerfile
-docker-compose.yml

@@ -1,0 +1,38 @@
+services:
+  web:
+    image: tiangolo/uwsgi-nginx:python3.9
+    build:
+      context: ./app/routes  
+      dockerfile: Dockerfile  
+    ports:
+      - "5000:5000" 
+    depends_on:
+      - db
+    environment:
+      - DATABASE_URL=mysql+pymysql://root:(Lugovaya34)@localhost/kanban  
+    networks:
+      - my-network
+
+  db:
+    image: mysql:8.0
+    build:
+      context: ./app/models  
+      dockerfile: Dockerfile  
+    environment: 
+      MYSQL_ROOT_PASSWORD: (Lugovaya34)  
+      MYSQL_DATABASE: kanban  
+    ports:
+      - "3307:3306"
+    volumes:
+      - db-data:/var/lib/mysql 
+    networks:
+      - my-network
+
+networks:
+  my-network:
+    driver: bridge 
+
+volumes:
+  db-data: 
+
+
