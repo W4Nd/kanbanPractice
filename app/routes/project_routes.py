@@ -1,19 +1,47 @@
 from flask import Blueprint, request, jsonify, render_template
-from app import db
+from flask_sqlalchemy import SQLAlchemy
 from app.models.project import Project, Board, Column, Task, TaskLog
 from sqlalchemy.exc import SQLAlchemyError
 
 bp = Blueprint('project', __name__)
 
-def create_object(model_class, **kwargs):
+class ValidationError(Exception):
+
+    def __init__(self, message, field=None):
+        super().__init__(message)
+        self.message = message
+        self.field = field
+
+    def __str__(self):
+        if self.field:
+            return f"Validation error in field '{self.field}': {self.message}"
+        return f"Validation error: {self.message}"
+
+
+def create_object(db, model_class, **kwargs):
     try:
+        if 'name' in kwargs and not kwargs['name']:
+            raise ValidationError("Invalid data", field="name")
+            
         new_object = model_class(**kwargs)
         db.session.add(new_object)
         db.session.commit()
-        return jsonify({'message': f'{model_class.__name__} created successfully'}), 201
+        return {'message': f'{model_class.__name__} created successfully'}, 201
+        
+    except ValidationError as e:
+        db.session.rollback()
+        return {'error': 'Validation error', 'details': str(e), 'field': e.field}, 400
+        
     except SQLAlchemyError as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        return {'error': 'Database error', 'details': str(e)}, 500
+        
+    except Exception as e:
+        db.session.rollback()
+        return {'error': 'Internal server error', 'details': str(e)}, 500
+        
+    finally:
+        db.session.close()
 
 @bp.route('/projects', methods=['POST'])
 def create_project():
