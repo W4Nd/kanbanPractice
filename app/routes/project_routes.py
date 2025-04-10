@@ -1,7 +1,8 @@
-from flask import Blueprint, request, jsonify, render_template
+from flask import Blueprint, request, jsonify, render_template, abort
 from flask_sqlalchemy import SQLAlchemy
 from app.models.project import Project, Board, Column, Task, TaskLog
 from sqlalchemy.exc import SQLAlchemyError
+from app import db
 
 bp = Blueprint('project', __name__)
 
@@ -18,72 +19,78 @@ class ValidationError(Exception):
         return f"Validation error: {self.message}"
 
 
+def handle_errors(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ValidationError as e:
+            db.session.rollback()
+            return {'error': 'Validation error', 'details': str(e)}, 400
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            return {'error': 'Database error', 'details': str(e)}, 500
+        except Exception as e:
+            db.session.rollback()
+            return {'error': 'Internal error', 'details': str(e)}, 500
+        finally:
+            db.session.close()
+    return wrapper
+
+@handle_errors
 def create_object(db, model_class, **kwargs):
-    try:
-        if 'name' in kwargs and not kwargs['name']:
-            raise ValidationError("Invalid data", field="name")
-            
-        new_object = model_class(**kwargs)
-        db.session.add(new_object)
-        db.session.commit()
-        return {'message': f'{model_class.__name__} created successfully'}, 201
-        
-    except ValidationError as e:
-        db.session.rollback()
-        return {'error': 'Validation error', 'details': str(e), 'field': e.field}, 400
-        
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        return {'error': 'Database error', 'details': str(e)}, 500
-        
-    except Exception as e:
-        db.session.rollback()
-        return {'error': 'Internal server error', 'details': str(e)}, 500
-        
-    finally:
-        db.session.close()
+    if 'name' in kwargs and not kwargs['name']:
+        raise ValidationError("Name cannot be empty", field="name")
+    
+    new_object = model_class(**kwargs)
+    db.session.add(new_object)
+    db.session.commit()
+    return {'message': f'{model_class.__name__} created'}, 201
 
-@bp.route('/projects', methods=['POST'])
-def create_project():
+MODELS_MAPPING = {
+    'projects': Project,
+    'boards': Board,
+    'columns': Column,
+    'tasks': Task,
+    'task_log': TaskLog,
+}
+
+def get_model_by_name(model_name):
+    return MODELS_MAPPING.get(model_name.lower())
+
+@bp.route('/<model_name>', methods=['POST'])
+def create_entity(model_name):
     data = request.form
-    return create_object(Project, name=data['name'], description=data['description'], user_id=data['user_id'])
+    model_class = get_model_by_name(model_name)
+    
+    if not model_class:
+        return {'error': 'Invalid model name'}, 404
 
-@bp.route('/boards', methods=['POST'])
-def create_board():
-    data = request.form
-    return create_object(Board, name=data['name'], project_id=data['project_id'])
+    required_fields = {
+        'Project': ['name', 'description', 'user_id'],
+        'Board': ['name', 'project_id'],
+        'Column': ['name', 'board_id'],
+        'Task': ['title', 'column_id'],
+        'TaskLog': ['event_type', 'user_id', 'task_id']
+    }
+    
+    missing_fields = [field for field in required_fields.get(model_name, []) if field not in data]
+    if missing_fields:
+        return {'error': f'Missing fields: {missing_fields}'}, 400
 
-@bp.route('/columns', methods=['POST'])
-def create_column():
-    data = request.form
-    return create_object(Column, name=data['name'], board_id=data['board_id'])
+    return create_object(db, model_class, **data)
 
-@bp.route('/tasks', methods=['POST'])
-def create_task():
-    data = request.form
-    return create_object(Task, title=data['title'], description=data['description'], status=data['status'], column_id=data['column_id'], assigned_user_id=data['assigned_user_id'])
+form_configs = {
+    'project': {'fields': ['name', 'description', 'user_id']},
+    'board': {'fields': ['name', 'project_id']},
+    'column': {'fields': ['name', 'board_id']},
+    'task': {'fields': ['title', 'description', 'column_id']},
+    'task_log': {'fields': ['event_type', 'user_id', 'details'], 'extra': {'task_id': 'task_id'}},
+}
 
-@bp.route('/tasks/<int:task_id>/logs', methods=['POST'])
-def create_task_log(task_id):
-    data = request.form
-    return create_object(TaskLog, task_id=task_id, event_type=data['event_type'], user_id=data['user_id'], details=data['details'])
-
-@bp.route('/create_project', methods=['GET'])
-def create_project_form():
-    return render_template('create_project.html')
-
-@bp.route('/create_board', methods=['GET'])
-def create_board_form():
-    return render_template('create_board.html')
-
-@bp.route('/create_column', methods=['GET'])
-def create_column_form():
-    return render_template('create_column.html')
-
-@bp.route('/create_task', methods=['GET'])
-def create_task_form():
-    return render_template('create_task.html')
-
-@bp.route('/create_task_log/<int:task_id>', methods=['GET'])
-def create_task_log_form(task_id):
-    return render_template('create_task_log.html', task_id=task_id)
+@bp.route('/create/<form_type>', methods=['GET'])
+def show_form(form_type):
+    config = form_configs.get(form_type)
+    if not config:
+        abort(404)
+    template_name = f'create_{form_type}.html'
+    return render_template(template_name, **config)
